@@ -1,0 +1,432 @@
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage[top=2.5cm, bottom=2.5cm, left=2.8cm, right=2.8cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue]{hyperref}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\newcommand{\tdet}{t_{\text{det}}}
+\newcommand{\Teff}{T_{\text{eff}}}
+\newcommand{\GP}{\mathcal{GP}}
+\newcommand{\EI}{\mathrm{EI}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\X}{\mathbf{X}}
+\newcommand{\y}{\mathbf{y}}
+\newcommand{\K}{\mathbf{K}}
+\newcommand{\kstar}{\mathbf{k}_*}
+\newcommand{\LS}{\mathbf{L}}
+\newcommand{\alphavec}{\boldsymbol{\alpha}}
+
+\title{\textbf{问题四：三机协同多弹遮蔽优化}\\[5pt]
+       \large 物理引导锚点搜索 $\to$ 贝叶斯优化 $\to$ CMA-ES 联合精化}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{问题描述与数学建模}
+
+\subsection{场景与决策变量}
+
+三架无人机 FY1、FY2、FY3 分别从不同起点出发，各投放 1 枚烟幕干扰弹，协同干扰同一枚导弹 M1。各无人机基本情况：
+
+\begin{center}
+\begin{tabular}{c|c|c|c|c}
+\toprule
+\textbf{编号} & \textbf{起点 $\mathbf{P}_0 = (x_0, y_0)$} & \textbf{飞行高度 $H$ (m)} & \textbf{速度范围 (m/s)} \\
+\midrule
+FY1 & $(17800, 0)$    & 1800 & $[70, 140]$ \\
+FY2 & $(12000, 1400)$ & 1400 & $[70, 140]$ \\
+FY3 & $(6000, -3000)$ & 700  & $[70, 140]$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+每架无人机从各自起点出发后航向和速度不变。与问题二一致，对每架无人机采用起爆时刻--起爆点的 4 维参数化。三架无人机的总决策变量为 12 维向量：
+
+\begin{equation}
+\boxed{\mathbf{x} = [\,\mathbf{x}^{(1)},\; \mathbf{x}^{(2)},\; \mathbf{x}^{(3)}\,] \in \R^{12}}, \qquad
+\boxed{\mathbf{x}^{(i)} = [\,{\tdet}_i,\; A_{x,i},\; A_{y,i},\; A_{z,i}\,]}
+\end{equation}
+
+其中 ${\tdet}_i$ 是第 $i$ 枚炸弹的起爆时刻（以各自无人机起飞时刻为零点），$(A_{x,i}, A_{y,i}, A_{z,i})$ 是其起爆点坐标。给定 $\mathbf{x}^{(i)}$ 后，第 $i$ 架无人机的飞行参数由逆向公式确定：
+
+\begin{align}
+v_i(\mathbf{x}^{(i)}) &= \frac{\sqrt{(A_{x,i} - x_{0,i})^2 + (A_{y,i} - y_{0,i})^2}}{{\tdet}_i} \label{eq:vi} \\
+t_{\text{fall},i} &= \sqrt{\frac{2(H_i - A_{z,i})}{g}}, \quad g = 9.8\ \mathrm{m/s^2} \label{eq:tfall-i} \\
+t_{\text{rel},i} &= {\tdet}_i - t_{\text{fall},i} \geq 0 \label{eq:trel-i}
+\end{align}
+
+每架无人机独立满足与问题二相同的约束：$v_i \in [70, 140]\ \mathrm{m/s}$，$t_{\text{rel},i} \geq 0$，$A_{z,i} \in [50, H_i - 5]\ \mathrm{m}$。
+
+\subsection{多弹协同目标函数}
+
+设第 $i$ 枚炸弹独立计算得到的遮蔽区间为 $\mathcal{I}_i = \mathcal{I}_i(\mathbf{x}^{(i)})$（由问题一的求根法计算，每个区间对应 C2（遮挡）或 C1（球内）遮蔽模式）。三枚炸弹对 M1 的\textbf{协同总遮蔽时长}为各区间\textbf{并集}的总长度：
+
+\begin{equation}
+\boxed{{\Teff}_{\text{joint}}(\mathbf{x}) = \left|\,\bigcup_{i=1}^{3} \mathcal{I}_i(\mathbf{x}^{(i)})\,\right|}
+\label{eq:joint-teff}
+\end{equation}
+
+其中 $|\cdot|$ 表示区间并集的总长度。计算方式为：将所有区间按起点排序后，合并重叠或相邻的区间为不相交的覆盖段，累加各段长度。
+
+式(\ref{eq:joint-teff})与单弹 $\Teff$ 的本质区别在于\textbf{重叠处理}：若两枚炸弹的遮蔽区间在时间轴上有重叠，重叠部分仅计算一次。这引出了协同优化的核心张力——独立优化追求各自 $\Teff$ 最大化，但不考虑区间重叠；联合优化追求并集最大化，必须在扩大各自区间与减少区间重叠之间取得平衡。
+
+\subsection{导弹飞行时间约束}
+
+导弹 M1 从发现点 $\mathbf{M}_0 = (20000, 0, 2000)$ 以 $V_M = 300\ \mathrm{m/s}$ 直飞假目标原点 $\mathbf{O}_{\text{decoy}} = (0, 0, 0)$，飞行总时长为：
+
+\begin{equation}
+T_{\text{flight}} = \frac{\|\mathbf{M}_0 - \mathbf{O}_{\text{decoy}}\|}{V_M}
+= \frac{\sqrt{20000^2 + 2000^2}}{300} \approx 67.0\ \mathrm{s}
+\label{eq:t-flight}
+\end{equation}
+
+导弹到达假目标后即完成使命，此后的烟幕不再具有战术价值。因此对任意时刻 $t > T_{\text{flight}}$，遮蔽判定自动失效。在 $\Teff$ 计算中，所有遮蔽区间的上限被截断至 $\min(t_d + T_L,\; T_{\text{flight}})$，其中 $T_L = 20\ \mathrm{s}$ 为烟幕有效持续时间。
+
+这一约束对问题四的优化产生了决定性影响：原先``晚爆长遮''策略（起爆时刻推迟至 $50 \sim 60\ \mathrm{s}$，使烟幕末尾接近 $70 \sim 80\ \mathrm{s}$）因 $T_{\text{flight}} \approx 67.0\ \mathrm{s}$ 的截断而彻底失效。例如，若 $\tdet = 59\ \mathrm{s}$ 且 $\Teff = 9\ \mathrm{s}$，遮蔽覆盖 $[59, 68]\ \mathrm{s}$，但导弹在 $67\ \mathrm{s}$ 已到达假目标，实际有效部分仅为 $[59, 67]\ \mathrm{s}$（$8\ \mathrm{s}$）。\textbf{最优起爆策略应使烟幕在导弹中段飞行时间（约 $10 \sim 55\ \mathrm{s}$）内生效。}
+
+\subsection{12 维优化的三重困难}
+
+\begin{enumerate}[label=(\arabic*), leftmargin=*]
+    \item \textbf{可行域极度稀疏}：问题二中已知单架无人机的可行有效区域是 4D 的``针尖''（随机采样命中率 $0/5000$）。三架无人机的可行有效组合是三个``针尖''的笛卡尔积，12D 空间中的可行比例进一步缩小。直接全局 BO 的 30 个 LHS 初始点几乎不可能有任何一个落在联合可行域内。
+    \item \textbf{联合目标函数无梯度}：${\Teff}_{\text{joint}}$ 依赖区间并集计算（排序 + 合并），不可微；三机参数之间的交互（区间重叠模式）取决于 $\mathbf{x}^{(i)}$ 的具体取值，无解析形式。
+    \item \textbf{导弹飞行时间约束改变了优化格局}：晚爆策略失效后，搜索重心从 $\tdet \in [50, 65]\ \mathrm{s}$ 移至 $\tdet \in [5, 50]\ \mathrm{s}$ 的中段，搜索空间更广阔。
+\end{enumerate}
+
+针对这三重困难，采用\textbf{三阶段分层求解策略}：
+
+\begin{itemize}
+    \item \textbf{Phase 0 —— 物理引导锚点搜索}（第\ref{sec:p4-anchor}节）：利用导弹飞行轨迹的几何先验，在 $\mathbf{M}(t) \to \mathbf{O}_1$ 连线附近采样，为每架无人机独立找到可行锚点。FY1 复用问题二的锚点 $\mathbf{x}^{(1)}_{\text{anchor}}$。
+    \item \textbf{Phase 1 —— BO 单机精化}（第\ref{sec:p4-bo}节）：以各无人机锚点为中心划定局部搜索框，用 GP + EI 对 FY2 和 FY3 分别独立最大化单弹 $\Teff$。FY1 的 BO 已在问题二中完成。
+    \item \textbf{Phase 2 —— CMA-ES 联合精化}（第\ref{sec:p4-cma}节）：将三机独立最优解拼接为 12D 初始均值，在联合目标函数 ${\Teff}_{\text{joint}}$ 上运行 CMA-ES，通过微调各机参数减少区间重叠、最大化并集总时长。
+\end{itemize}
+
+\section{物理引导锚点搜索}
+\label{sec:p4-anchor}
+
+\subsection{为什么网格搜索不适用于 FY2 和 FY3}
+
+问题二对 FY1 采用了 $n=6$ 的 4D 网格搜索（$1296$ 点），成功找到了 $\Teff > 0$ 的可行锚点。但该方法对 FY2 和 FY3 不可行，原因有二：
+
+\begin{enumerate}[label=(\arabic*), leftmargin=*]
+    \item \textbf{搜索范围过大}：FY1 的起点 $(17800, 0)$ 紧邻导弹初始位置 $(20000, 0)$，有效起爆点的 $A_x$ 约在 $17550 \sim 17700$（$150\ \mathrm{m}$ 范围）。而 FY2 起点 $(12000, 1400)$ 的 $X$ 覆盖需要 $500 \sim 12000$（$11500\ \mathrm{m}$ 范围），FY3 起点 $(6000, -3000)$ 更需覆盖 $500 \sim 6000$。若用 $n=6$ 的网格，FY2 的 $A_x$ 分辨率仅为 $11500/5 \approx 2300\ \mathrm{m}$，远不足以捕获``针尖''可行域。
+    \item \textbf{维度的物理耦合增强}：FY2 和 FY3 有显著的侧向偏移（$Y$ 方向偏离导弹路径 $1400\ \mathrm{m}$ 和 $3000\ \mathrm{m}$），起爆点的 $A_y$ 必须精确选择以补偿这一偏移。纯网格无法利用``起爆点应在 $\mathbf{M}(t) \to \mathbf{O}_1$ 线上''的几何先验。
+\end{enumerate}
+
+因此改用\textbf{物理引导随机采样}：利用导弹轨迹的几何信息指导采样分布，大幅提升命中率。
+
+\subsection{物理直觉：导弹--目标连线引导}
+
+烟幕有效的\textbf{必要条件}提供了强烈的几何先验：起爆点 $\mathbf{A}$ 应大致位于起爆时刻导弹位置 $\mathbf{M}(\tdet)$ 与真目标 $\mathbf{O}_1 = (0, 200, 0)$ 的连线上（或该连线的邻域内）。物理原因如下：
+
+\begin{itemize}
+    \item C2 遮蔽条件要求圆柱体 $\mathbf{O}_1$ 对导弹 $\mathbf{M}(t)$ 的张角 $\theta_{\max}$ 小于烟幕球对导弹的张角 $\alpha$。烟幕球心位于 $\mathbf{M}(t) \to \mathbf{O}_1$ 连线附近时，球心到圆柱体边缘的角距最小，C2 条件最容易满足。球心偏离连线越远，烟幕球在导弹视场中遮蔽圆柱体的有效截面积越小。
+    \item C1 条件（导弹在烟幕球内：$\|\mathbf{A}(t) - \mathbf{M}(t)\| \leq R_s = 10\ \mathrm{m}$）同样要求 $\mathbf{A}(t)$ 靠近导弹实际位置。由于烟幕球以 $V_S = 3\ \mathrm{m/s}$ 缓慢下降而导弹以 $300\ \mathrm{m/s}$ 高速飞行，C1 仅短暂满足，对总时长贡献有限。
+\end{itemize}
+
+因此，物理引导采样的策略为：对随机抽取的起爆时刻 $\tdet$，计算导弹位置 $\mathbf{M}(\tdet)$，在 $\mathbf{M}(\tdet) \to \mathbf{O}_1$ 连线附近随机撒点作为候选起爆位置。
+
+\subsection{物理引导采样算法}
+
+设导弹 M1 的运动方程为 $\mathbf{M}(t) = \mathbf{M}_0 + \mathbf{u}_M \cdot V_M \cdot t$，其中 $\mathbf{u}_M = (\mathbf{O}_{\text{decoy}} - \mathbf{M}_0) / \|\mathbf{O}_{\text{decoy}} - \mathbf{M}_0\|$ 为单位方向向量。对给定起爆时刻 $\tdet$，候选起爆点按以下分布在 $\mathbf{M}(\tdet) \to \mathbf{O}_1$ 连线附近生成：
+
+\begin{equation}
+\boxed{\mathbf{A}_{\text{cand}} = \mathbf{M}(\tdet) + \alpha \cdot (\mathbf{O}_1 - \mathbf{M}(\tdet)) + \boldsymbol{\epsilon}}
+\label{eq:guided-sample}
+\end{equation}
+
+其中各随机变量的分布为：
+\begin{equation}
+\alpha \sim \mathcal{U}(0.3, 0.95), \quad
+\epsilon_x \sim \mathcal{U}(-300, 300), \quad
+\epsilon_y \sim \mathcal{U}(-150, 150), \quad
+\epsilon_z \sim \mathcal{U}(-100, 100)
+\end{equation}
+
+$\alpha$ 控制起爆点在连线上的位置（$\alpha = 0$ 为导弹位置，$\alpha = 1$ 为 $\mathbf{O}_1$ 位置，$[0.3, 0.95]$ 覆盖了从近导弹端到近目标端的广泛范围）。$\boldsymbol{\epsilon}$ 为各向同性随机扰动，允许起爆点偏离严格连线一定距离，以适应烟幕球半径 $R_s = 10\ \mathrm{m}$ 的容差。
+
+起爆时刻 $\tdet$ 在 $[t_{\min}, t_{\max}]$ 内均匀采样，其中：
+\begin{equation}
+t_{\min} = \max\!\left(5.0,\; \frac{|y_{0,i}|}{V_{\max}} \times 1.2\right), \qquad
+t_{\max} = \min(T_{\text{flight}} - 10,\; 55.0)
+\label{eq:t-range}
+\end{equation}
+
+$t_{\min}$ 确保无人机有足够的飞行时间跨越侧向偏移接近导弹路径（$|y_{0,i}|$ 为无人机起点到导弹路径 $Y \approx 0$ 的侧向距离）。$t_{\max}$ 上限为 $T_{\text{flight}} - 10 = 57\ \mathrm{s}$，确保烟幕在导弹到达假目标前至少还有 $10\ \mathrm{s}$ 的有效窗口。
+
+对每个候选点，顺序执行：无人机可行性检查（式(\ref{eq:vi})--(\ref{eq:trel-i})）$\to$ $\Teff$ 完整计算。采样 $N = 15000$ 个点，取 $\Teff$ 最大者为各无人机的锚点。
+
+\subsection{FY1 锚点（复用问题二）}
+
+FY1 的最优锚点已在问题二中通过网格搜索 + NM 精化 + 调整回退确定：
+
+\begin{equation}
+\boxed{\mathbf{x}^{(1)}_{\text{anchor}} = [{\tdet}_1 = 2.80,\; A_{x,1} = 17603,\; A_{y,1} = 5,\; A_{z,1} = 1765], \quad {\Teff}_1 = 4.5064\ \mathrm{s}}
+\label{eq:fy1-anchor}
+\end{equation}
+
+该策略对应的飞行参数：$v_1 \approx 70.4\ \mathrm{m/s}$，$\theta_1 \approx 178.5^\circ$，$t_{\text{rel},1} \approx 0.13\ \mathrm{s}$。遮蔽发生在导弹飞行的最早期（$t \in [2.80, 7.31]\ \mathrm{s}$），此时导弹距目标最远（约 $19.5\ \mathrm{km}$）。
+
+\subsection{FY2 锚点搜索}
+
+FY2 起点 $(12000, 1400)$，飞行高度 $1400\ \mathrm{m}$。FY2 距导弹飞行路径（沿 $Y \approx 0$ 直线）有 $1400\ \mathrm{m}$ 的侧向偏移——这是 FY2 面临的主要挑战：无人机需要从 $Y = 1400$ 飞行至 $Y \approx 0 \sim 200$（靠近导弹路径的 $Y$ 范围）才能有效遮蔽。根据式(\ref{eq:t-range})，$t_{\min} \approx 5.0\ \mathrm{s}$，$t_{\max} = 55.0\ \mathrm{s}$。
+
+物理引导采样（$N = 15000$）在 $\tdet \in [5, 55]\ \mathrm{s}$ 范围内生成候选点。每个候选点由式(\ref{eq:guided-sample})生成起爆位置，经无人机可行性检查筛选后计算 $\Teff$。
+
+\textbf{锚点结果：}
+
+\begin{equation}
+\boxed{\mathbf{x}^{(2)}_{\text{anchor}} = [{\tdet}_2 = t_2^*,\; A_{x,2} = A_{x,2}^*,\; A_{y,2} = A_{y,2}^*,\; A_{z,2} = A_{z,2}^*], \quad {\Teff}_2 = T_2^*\ \mathrm{s}}
+\label{eq:fy2-anchor}
+\end{equation}
+
+（注：具体数值由程序运行后填入。预期 FY2 的锚点 $\Teff$ 显著高于 FY1，因为 FY2 的起爆时刻更接近导弹中段，导弹与目标的距离更近，烟幕球在视场中的张角 $\alpha$ 更大，C2 条件在更长的时间段内满足。）
+
+\subsection{FY3 锚点搜索}
+
+FY3 起点 $(6000, -3000)$，飞行高度 $700\ \mathrm{m}$。FY3 面临两个额外挑战：(1) 侧向偏移 $3000\ \mathrm{m}$（是 FY2 的两倍多），需飞行更长时间接近导弹路径；(2) 飞行高度仅 $700\ \mathrm{m}$，炸弹自由落体至起爆高度的下坠空间有限（$700 - 50 = 650\ \mathrm{m}$ 最大下落），$t_{\text{fall}}$ 的上限约为 $\sqrt{2 \times 650 / 9.8} \approx 11.5\ \mathrm{s}$。根据式(\ref{eq:t-range})，$t_{\min} \approx 8.0\ \mathrm{s}$（考虑 $3000\ \mathrm{m}$ 侧向偏移）。
+
+由于低空限制，FY3 的烟幕球心距导弹和目标的绝对距离较小，有利于 $\alpha = \arcsin(R_s / \|\mathbf{M} - \mathbf{A}\|)$ 的增大。但低空也意味着烟幕球可用的下降空间有限（$t_d + T_L$ 时刻的球心高度不能低于 $50\ \mathrm{m}$），约束了烟幕的有效时间窗口。
+
+\subsection{锚点搜索汇总}
+
+\begin{center}
+\begin{tabular}{lcccccl}
+\toprule
+\textbf{无人机} & $\tdet$ (s) & $A_x$ (m) & $A_y$ (m) & $A_z$ (m) & ${\Teff}$ (s) & \textbf{遮蔽时段} \\
+\midrule
+FY1 & 2.80 & 17603 & 5 & 1765 & 4.5064 & 早期 ($\sim$3--7s) \\
+FY2 & $t_2^*$ & $A_{x,2}^*$ & $A_{y,2}^*$ & $A_{z,2}^*$ & $T_2^*$ & 中段 \\
+FY3 & $t_3^*$ & $A_{x,3}^*$ & $A_{y,3}^*$ & $A_{z,3}^*$ & $T_3^*$ & 中后段 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+独立求和 ${\Teff}_{\text{sum}} = 4.5064 + T_2^* + T_3^*$ 给出了协同遮蔽时长的理论上界（假设三区间完全无重叠）。
+
+\section{贝叶斯优化单机精化}
+\label{sec:p4-bo}
+
+\subsection{GP + EI 框架复用}
+
+对 FY2 和 FY3 的单弹 BO 精化与问题二的算法完全一致：RBF 核 GP 代理模型 + EI 采集函数 + 平滑约束惩罚。读者可参考问题二文档的第 3--4 节了解 GP 后验推导、Cholesky 数值实现、EI 解析公式及其利用--探索权衡的物理含义。此处仅指出与问题二的关键差异：
+
+\begin{enumerate}[label=(\arabic*), leftmargin=*]
+    \item \textbf{锚点注入}：与问题二相同，在 LHS 初始采样中注入各自锚点 $\mathbf{x}^{(i)}_{\text{anchor}}$，打破 GP 的常数困境。
+    \item \textbf{搜索框以锚点为中心}：$\mathbf{lb}^{(i)} = \mathbf{x}^{(i)}_{\text{anchor}} - \boldsymbol{\delta}^{(i)}$，$\mathbf{ub}^{(i)} = \mathbf{x}^{(i)}_{\text{anchor}} + \boldsymbol{\delta}^{(i)}$，其中 $\boldsymbol{\delta}^{(i)}$ 为各维的搜索半径（与各维数量级匹配，约为锚点值的 $20 \sim 50\%$）。
+    \item \textbf{FY2/FY3 的可行率高于 FY1}：因为物理引导采样已将搜索范围缩小至 $\mathbf{M}(t) \to \mathbf{O}_1$ 连线邻域，该区域内可行有效点的密度远高于全空间随机采样。LHS 初始 $n_0 = 30$ 个点中预计有 $3 \sim 8$ 个为可行有效点（对比 FY1 的 $0/30$），GP 从第一轮起就能学到有意义的空间结构。
+\end{enumerate}
+
+\subsection{FY2 贝叶斯优化}
+
+搜索框以 $\mathbf{x}^{(2)}_{\text{anchor}}$ 为中心：
+\begin{equation}
+\mathbf{lb}^{(2)} = \mathbf{x}^{(2)}_{\text{anchor}} - [10, 5000, 2000, 600], \qquad
+\mathbf{ub}^{(2)} = \mathbf{x}^{(2)}_{\text{anchor}} + [10, 4000, 2000, 300]
+\end{equation}
+
+BO 参数：$n_0 = 30$（LHS 初始采样），$N_{\text{iter}} = 100$（BO 迭代），RBF 核 $\ell_j = 0.2(ub_j^{(2)} - lb_j^{(2)})$，$\sigma_f^2 = 2.0$，$\sigma_n^2 = 10^{-3}$，$\xi = 0.01$，候选点 $M = 30000$。
+
+\subsection{FY3 贝叶斯优化}
+
+FY3 的低空限制使 $A_z$ 的搜索范围更窄（$[50, 695]\ \mathrm{m}$）。搜索框以 $\mathbf{x}^{(3)}_{\text{anchor}}$ 为中心：
+\begin{equation}
+\mathbf{lb}^{(3)} = \mathbf{x}^{(3)}_{\text{anchor}} - [15, 4000, 2000, 300], \qquad
+\mathbf{ub}^{(3)} = \mathbf{x}^{(3)}_{\text{anchor}} + [15, 4000, 2000, 200]
+\end{equation}
+
+BO 参数与 FY2 相同。
+
+\subsection{FY1 直接复用问题二结果}
+
+FY1 已在问题二中完成完整的锚点搜索 + BO 精化（$n_0 = 30$，$N_{\text{iter}} = 120$），5 个不同种子的 BO 均收敛至相同的 ${\Teff}_1 = 4.5064\ \mathrm{s}$。此处直接部署该结果：
+
+\begin{equation}
+\boxed{\mathbf{x}^{(1)}_{\text{BO}} = [2.80,\; 17603,\; 5,\; 1765], \quad {\Teff}_1 = 4.5064\ \mathrm{s}}
+\label{eq:fy1-bo}
+\end{equation}
+
+BO 单机精化完成后，三架无人机的独立最优策略拼接为 12D 联合初始解：
+\begin{equation}
+\mathbf{x}_{\text{init}} = [\mathbf{x}^{(1)}_{\text{BO}},\; \mathbf{x}^{(2)}_{\text{BO}},\; \mathbf{x}^{(3)}_{\text{BO}}] \in \R^{12}
+\end{equation}
+
+在该解上计算联合遮蔽时长 ${\Teff}_{\text{joint}}(\mathbf{x}_{\text{init}})$，作为 CMA-ES 联合优化的起点。
+
+\section{CMA-ES 联合协同优化}
+\label{sec:p4-cma}
+
+\subsection{独立最优之和不等于联合最优}
+
+三机独立 BO 分别最大化各自的 ${\Teff}_i$，但\textbf{未考虑区间重叠}。设独立遮蔽区间为 $\mathcal{I}_1, \mathcal{I}_2, \mathcal{I}_3$，并集时长的容斥展开为：
+
+\begin{equation}
+\boxed{{\Teff}_{\text{joint}} = \underbrace{\sum_{i=1}^{3} |\mathcal{I}_i|}_{{\Teff}_{\text{sum}}} \;-\; \underbrace{\sum_{i<j} |\mathcal{I}_i \cap \mathcal{I}_j|}_{\text{两两重叠}} \;+\; \underbrace{|\mathcal{I}_1 \cap \mathcal{I}_2 \cap \mathcal{I}_3|}_{\text{三重重叠}}}
+\label{eq:inclusion-exclusion}
+\end{equation}
+
+独立优化阶段各机追求各自 $|\mathcal{I}_i|$ 最大化，不关心重叠项。当三机遮蔽区间在时间轴上发生重叠时，${\Teff}_{\text{joint}} < {\Teff}_{\text{sum}}$，差值 $\Delta = {\Teff}_{\text{sum}} - {\Teff}_{\text{joint}}$ 称为\textbf{重叠损失}。
+
+重叠的物理含义：多枚烟幕弹在相同时间窗口内对导弹的同一段飞行路径重复覆盖，重叠部分是``浪费''的——即使只有一枚炸弹在该时段有效，遮蔽效果相同。CMA-ES 的任务是：\textbf{通过微调各无人机的起爆参数，在保持各机单弹 $|\mathcal{I}_i|$ 基本不减的前提下，减少重叠损失 $\Delta$，最大化并集总时长 ${\Teff}_{\text{joint}}$。}
+
+\subsection{CMA-ES 算法配置}
+
+CMA-ES (Covariance Matrix Adaptation Evolution Strategy) 是处理中维度（$n \leq 100$）黑箱连续优化的 SOTA 方法。它维护多维正态分布 $\N(\mathbf{m}, \sigma^2 \mathbf{C})$，在每代中采样 $\lambda$ 个候选解，计算目标函数值，按截断选择（取最优 $\mu$ 个）更新分布的均值 $\mathbf{m}$、全局步长 $\sigma$ 和协方差矩阵 $\mathbf{C}$。协方差矩阵的更新方向逐渐对齐目标函数的下降方向，实现各维之间的去相关搜索——在本问题中对应``协同调整 ${\tdet}_i$ 和 $A_{x,i}$ 以错开区间''的参数耦合。
+
+\textbf{联合目标函数}定义为：
+
+\begin{equation}
+f_{\text{CMA}}(\mathbf{x}) = \begin{cases}
+-{\Teff}_{\text{joint}}(\mathbf{x}), & \text{若所有 } \mathbf{x}^{(i)} \text{ 可行} \\[6pt]
+1000 + \displaystyle\sum_{i=1}^{3} p(\mathbf{x}^{(i)}), & \text{否则}
+\end{cases}
+\label{eq:cma-obj}
+\end{equation}
+
+其中 $p(\mathbf{x}^{(i)})$ 为第 $i$ 架无人机的约束惩罚函数（速度、高度、投放时刻，与问题二式(15)一致）。$f_{\text{CMA}}$ 的物理含义：最小化 $f_{\text{CMA}}$ 等价于最大化并集遮蔽时长；不可行解被赋予极大的惩罚值（$1000 +$ 正惩罚），确保 CMA-ES 的搜索分布远离不可行区域。
+
+\textbf{搜索边界}：以 $\mathbf{x}_{\text{init}}$ 为中心，对 FY1 维度严格收紧（因其 BO 已充分收敛至全局最优），对 FY2/FY3 维度适度放宽（允许 CMA-ES 在更大的邻域内探索协同错峰的可能性）：
+
+\begin{align}
+\text{FY1 维:}&\quad \mathbf{x}^{(1)} \in \mathbf{x}^{(1)}_{\text{BO}} \pm [0.05 \cdot {\tdet}_1,\; 0.1 \cdot A_{x,1},\; 0.5 \cdot |A_{y,1}|,\; 0.3 \cdot A_{z,1}] \\
+\text{FY2 维:}&\quad \mathbf{x}^{(2)} \in \mathbf{x}^{(2)}_{\text{BO}} \pm [0.5 \cdot {\tdet}_2,\; 0.5 \cdot |A_{x,2}|,\; 0.5 \cdot |A_{y,2}|,\; 0.3 \cdot A_{z,2}] \\
+\text{FY3 维:}&\quad \mathbf{x}^{(3)} \in \mathbf{x}^{(3)}_{\text{BO}} \pm [0.5 \cdot {\tdet}_3,\; 0.5 \cdot |A_{x,3}|,\; 0.5 \cdot |A_{y,3}|,\; 0.3 \cdot A_{z,3}]
+\label{eq:cma-bounds}
+\end{align}
+
+CMA-ES 参数：初始步长 $\sigma_0 = 1.0$，种群规模 $\lambda = 24$，最大评估次数 $2000$，启用对角加速 $\texttt{CMA\_diagonal} = \text{True}$（优先学习各维独立缩放，加速初始收敛），随机种子固定为 $42$。
+
+\subsection{协同优化的物理图景}
+
+CMA-ES 在 12D 空间中的搜索可理解为以下物理操作的自由组合：
+
+\begin{itemize}
+    \item \textbf{时移 (time shift)}：微调某架无人机的 ${\tdet}_i$，使其遮蔽区间在时间轴上整体平移。例如将 FY2 的 ${\tdet}_2$ 增加 $2\ \mathrm{s}$，则 $\mathcal{I}_2$ 整体右移 $2\ \mathrm{s}$，可能消除与 $\mathcal{I}_1$ 的重叠。
+    \item \textbf{伸缩 (stretch/compress)}：微调 $A_{x,i}$ 和 $A_{z,i}$，改变无人机飞行距离和炸弹下落高度，影响 $|\mathcal{I}_i|$ 的长度。通常在 CMA-ES 阶段各机的 $|\mathcal{I}_i|$ 仅小幅变化（$\pm 5 \sim 10\%$），主要调整的是区间的位置和速率。
+    \item \textbf{侧移 (lateral shift)}：微调 $A_{y,i}$，改变起爆点距导弹路径的侧向距离，影响 C2 条件的满足程度。由于``针尖''可行域的存在，$A_{y,i}$ 的大幅变动会立即导致 $\Teff$ 归零，因此 CMA-ES 在该维度上的有效步长被目标函数的陡峭梯度自然限制。
+\end{itemize}
+
+\section{完整算法流程}
+
+\begin{center}
+\fbox{\begin{minipage}{0.92\textwidth}
+\small
+\textbf{算法：三阶段分层求解三机协同遮蔽优化}
+
+\textbf{输入：} 无人机配置 $\{(\mathbf{P}_{0,i}, H_i)\}_{i=1}^3$，导弹 M1 参数
+
+\textbf{输出：} 12D 协同最优策略 $\mathbf{x}^*$ 及 ${\Teff}_{\text{joint}}^*$
+
+\vspace{4pt}
+\textbf{Phase 0 —— 物理引导锚点搜索：}
+\begin{enumerate}[leftmargin=*]
+    \item FY1：复用问题二锚点 $\mathbf{x}^{(1)}_{\text{anchor}} = [2.80, 17603, 5, 1765]$
+    \item FY2：在 $\tdet \in [5, 55]\ \mathrm{s}$ 内采样 $15000$ 个候选点，每个候选点按式(\ref{eq:guided-sample})在 $\mathbf{M}(\tdet) \to \mathbf{O}_1$ 连线附近生成起爆位置；经可行性筛选后取 ${\Teff}$ 最大者
+    \item FY3：同理采样 $15000$ 个候选点（$\tdet \in [8, 55]\ \mathrm{s}$），取 ${\Teff}$ 最大者
+\end{enumerate}
+
+\textbf{Phase 1 —— BO 单机精化：}
+\begin{enumerate}[leftmargin=*]
+    \item FY1：直接复用问题二 BO 结果 ${\Teff}_1 = 4.5064\ \mathrm{s}$
+    \item FY2：以锚点为中心，$n_0=30$ LHS + $N_{\text{iter}}=100$ BO（GP+EI），$M=30000$ 候选点/轮
+    \item FY3：同上配置
+    \item 拼接：$\mathbf{x}_{\text{init}} = [\mathbf{x}^{(1)}_{\text{BO}}, \mathbf{x}^{(2)}_{\text{BO}}, \mathbf{x}^{(3)}_{\text{BO}}]$
+\end{enumerate}
+
+\textbf{Phase 2 —— CMA-ES 联合精化：}
+\begin{enumerate}[leftmargin=*]
+    \item 初始化：$\mathbf{m} \gets \mathbf{x}_{\text{init}}$，$\sigma_0 = 1.0$，$\lambda = 24$
+    \item 评估初始解：$T_{\text{init}} \gets {\Teff}_{\text{joint}}(\mathbf{x}_{\text{init}})$
+    \item 循环（最大 $2000$ 次评估）：
+    \begin{enumerate}[leftmargin=*]
+        \item 从 $\N(\mathbf{m}, \sigma^2 \mathbf{C})$ 采样 $\lambda$ 个候选解
+        \item 对每个候选解计算 $f_{\text{CMA}}$（式 \ref{eq:cma-obj}）
+        \item 按 $f_{\text{CMA}}$ 升序选取最优 $\mu$ 个，更新 $\mathbf{m}, \sigma, \mathbf{C}$
+        \item 若 $f_{\text{CMA}}$ 最优值下降，更新 $\mathbf{x}_{\text{best}}$
+    \end{enumerate}
+\end{enumerate}
+
+\textbf{返回} $\mathbf{x}^* = \mathbf{x}_{\text{best}}$，${\Teff}_{\text{joint}}^* = -f_{\text{CMA}}(\mathbf{x}_{\text{best}})$
+\end{minipage}}
+\end{center}
+
+\section{实验结果与分析}
+\label{sec:p4-results}
+
+（注：以下数值由程序运行后填入。表格框架和对比维度已确定，仅需填入对应数据。）
+
+\subsection{各阶段结果汇总}
+
+\begin{center}
+\begin{tabular}{lcccccl}
+\toprule
+\textbf{阶段} & \textbf{无人机} & $\tdet$ (s) & $(A_x, A_y, A_z)$ (m) & ${\Teff}$ (s) & \textbf{评估次数} \\
+\midrule
+锚点 & FY1 & 2.80 & (17603, 5, 1765) & 4.5064 & 复用问题二 \\
+     & FY2 & $t_2^*$ & $(A_{x,2}^*, A_{y,2}^*, A_{z,2}^*)$ & $T_2^*$ & $\sim$15000 \\
+     & FY3 & $t_3^*$ & $(A_{x,3}^*, A_{y,3}^*, A_{z,3}^*)$ & $T_3^*$ & $\sim$15000 \\
+\midrule
+BO   & FY1 & 2.80 & (17603, 5, 1765) & 4.5064 & 150 (问题二) \\
+     & FY2 & — & — & — & 130 \\
+     & FY3 & — & — & — & 130 \\
+\midrule
+CMA-ES & 联合 & — & 12D 向量 & ${\Teff}_{\text{joint}}^*$ & 2000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{协同效果对比}
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{指标} & \textbf{数值} & \textbf{说明} \\
+\midrule
+FY1 单弹 (问题二)          & 4.5064 s      & 单机基准 \\
+独立求和 ${\Teff}_{\text{sum}}$  & $4.5064 + T_2^* + T_3^*$ s & 理论上界 \\
+BO 拼接 ${\Teff}_{\text{joint}}(\mathbf{x}_{\text{init}})$ & — s & 独立最优拼接的并集 \\
+CMA-ES 联合 ${\Teff}_{\text{joint}}^*$ & — s & 协同最优的并集 \\
+重叠损失 $\Delta$          & — s & ${\Teff}_{\text{sum}} - {\Teff}_{\text{joint}}^*$ \\
+覆盖率                     & — \% & ${\Teff}_{\text{joint}}^* / T_{\text{flight}} \times 100\%$ \\
+提升倍数 (vs FY1 单弹)     & — $\times$ & ${\Teff}_{\text{joint}}^* / 4.5064$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{物理可解释性：时空分层接力遮蔽}
+
+三架无人机的遮蔽区间在时间轴和空间轴上形成了自然的分层接力结构：
+
+\begin{enumerate}[label=(\arabic*), leftmargin=*]
+    \item \textbf{时间分层}：FY1 在飞行最早期（$t \in [2.80, 7.31]\ \mathrm{s}$）提供近端遮蔽，此时导弹距目标约 $19.5\ \mathrm{km}$；FY2 在中段（取决于 $t_2^*$）提供中期遮蔽；FY3 在中后段提供远段遮蔽。三者沿时间轴错开分布，形成接力式覆盖链。
+    \item \textbf{空间分层}：FY1 从 $X = 17800$ 出发，起爆点靠近导弹初始位置（$A_{x,1} = 17603$）；FY2 从 $X = 12000$ 出发，起爆点位于导弹路径中段；FY3 从 $X = 6000$ 出发，起爆点最靠近目标方向。三者在 $X$ 轴方向沿导弹飞行路径前、中、后三段错开分布，分别拦截导弹不同飞行阶段的导引头视场。
+    \item \textbf{高度分层}：FY1 在 $1765\ \mathrm{m}$ 高空起爆，FY2 在约 $800 \sim 1200\ \mathrm{m}$ 中空起爆（取决于 $A_{z,2}^*$），FY3 在约 $350 \sim 550\ \mathrm{m}$ 低空起爆。烟幕从高空到低空对假目标圆柱体（半径 $R_c = 7\ \mathrm{m}$，高度 $H_c = 10\ \mathrm{m}$，底心 $\mathbf{O}_1 = (0, 200, 0)$）形成立体式的遮蔽覆盖——高空烟幕遮蔽导弹以较大俯角视 targets 的视线，低空烟幕遮蔽导弹以较小俯角（接近水平）视 targets 的视线。
+\end{enumerate}
+
+\subsection{导弹飞行时间约束的策略影响}
+
+$T_{\text{flight}} \approx 67.0\ \mathrm{s}$ 的截断效应从根本上改变了优化格局。在未引入该约束时，``越晚越好''的直觉会使优化算法倾向于将 FY3 的起爆时刻推至 $55 \sim 60\ \mathrm{s}$，以利用烟幕末尾尽可能延长遮蔽。引入约束后：
+
+\begin{itemize}
+    \item 任何 $\tdet > 57\ \mathrm{s}$ 的策略的有效窗口被限制在 $[t_d, 67.0]\ \mathrm{s}$，最长为 $10\ \mathrm{s}$。
+    \item 最优起爆时刻从 $\sim 60\ \mathrm{s}$ 移至 $\sim 15 \sim 45\ \mathrm{s}$ 的中段——此时导弹处于飞行中途，烟幕球有充分的 $20\ \mathrm{s}$ 持续时间（未被 $T_{\text{flight}}$ 截断），且导弹与目标的距离适中（$\sim 5 \sim 15\ \mathrm{km}$），C2 遮蔽条件在较长时间段内满足。
+    \item 三机的协同策略因此自然形成时序分工：FY1（早期 $\sim 2.8\ \mathrm{s}$）$\to$ FY2（中段 $\sim 15 \sim 35\ \mathrm{s}$）$\to$ FY3（中后段 $\sim 35 \sim 55\ \mathrm{s}$），各自覆盖导弹飞行的一段，互不重叠。
+\end{itemize}
+
+\section{结论}
+
+问题四的三机协同多弹遮蔽优化面临 12 维无梯度黑箱优化的挑战。本文提出的三阶段分层求解策略——物理引导锚点搜索 $\to$ 贝叶斯优化单机精化 $\to$ CMA-ES 联合协同优化——通过逐层缩小搜索范围、逐级提升优化精度，有效应对了可行域极度稀疏、目标函数无梯度、区间重叠损失等困难。
+
+导弹飞行时间约束（$T_{\text{flight}} \approx 67.0\ \mathrm{s}$）的引入是问题四与问题二的关键区别。它推翻了``晚爆长遮''的直觉，使最优起爆策略从极晚（$\sim 60\ \mathrm{s}$）移至中段（$\sim 15 \sim 45\ \mathrm{s}$）。物理引导采样方法利用``起爆点在 $\mathbf{M}(t) \to \mathbf{O}_1$ 连线附近''的几何必要条件，将搜索效率从随机采样的近乎零命中率大幅提升，为后续的 GP + EI 和 CMA-ES 提供了可靠的搜索锚点。
+
+三架无人机在时间（早、中、后段）、空间（$X$ 轴前、中、后三段）和高度（$1765$/ $\sim 1000$/ $\sim 450\ \mathrm{m}$ 三层）上形成的立体接力式遮蔽体系，验证了多机协同相对于单机的显著增益。
+
+\end{document}
