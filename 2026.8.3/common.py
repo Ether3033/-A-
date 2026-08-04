@@ -63,6 +63,13 @@ G = 9.8
 
 V_MIN, V_MAX = 70., 140.
 
+# 导弹飞行时间: 从起点到假目标原点的总飞行时间
+MISSILE_T_FLIGHT = {
+    'M1': np.linalg.norm(M1_0 - O_DECOY) / VM,  # ≈ 67.0s
+    'M2': np.linalg.norm(M2_0 - O_DECOY) / VM,  # ≈ 63.8s
+    'M3': np.linalg.norm(M3_0 - O_DECOY) / VM,  # ≈ 60.4s
+}
+
 u_m1 = (O_DECOY - M1_0) / np.linalg.norm(O_DECOY - M1_0)
 u_m2 = (O_DECOY - M2_0) / np.linalg.norm(O_DECOY - M2_0)
 u_m3 = (O_DECOY - M3_0) / np.linalg.norm(O_DECOY - M3_0)
@@ -204,6 +211,9 @@ def compute_T_eff(Ad, td, missile='M1'):
                 t_geom = min(t_geom, tg)
 
     t_end = td + TL
+    t_flight_end = MISSILE_T_FLIGHT.get(missile, 1e9)
+    if t_end > t_flight_end:
+        t_end = t_flight_end
     intervals = []
     if c2_roots:
         ts = c2_roots[0]
@@ -287,6 +297,9 @@ def compute_T_eff_intervals(Ad, td, missile='M1'):
             if td < tg < td + TL: t_geom = min(t_geom, tg)
 
     t_end = td + TL
+    t_flight_end = MISSILE_T_FLIGHT.get(missile, 1e9)
+    if t_end > t_flight_end:
+        t_end = t_flight_end
     intervals = []
     if c2_roots:
         ts = c2_roots[0]

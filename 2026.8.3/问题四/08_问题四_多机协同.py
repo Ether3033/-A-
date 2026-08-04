@@ -1,16 +1,15 @@
 """
 问题四：3架无人机(FY1, FY2, FY3)各投放1枚烟幕干扰弹，协同干扰M1
 ==============================================================
-策略（修正版，含M1飞行时间约束）:
+v2: 使用 common.py (numpy物理模型, 与问题二一致)
+
+策略:
   阶段0: 物理引导锚点搜索 — 在导弹-目标连线附近采样
   阶段1: BO(GP+EI) 独立优化FY2/FY3单弹
-          (FY1沿用问题二最优解: T_eff≈4.84s)
+          (FY1沿用问题二最优解: T_eff≈4.51s)
   阶段2: CMA-ES(cma库)联合优化3架无人机12D协同策略
 
-关键修正: M1飞行时间 T_flight≈67.0s, 烟幕在导弹到达假目标后失效
-  → 晚爆策略(50-60s)被推翻, 最优起爆时刻移至中段(15-45s)
-
-使用纯Python common_pure.py + safe_compute_T_eff 避免崩溃
+关键约束: M1飞行时间 T_flight≈67.0s, 烟幕在导弹到达假目标后失效
 输出: 附件/result2.xlsx
 """
 
@@ -18,17 +17,12 @@ import sys, os, time, gc, math, random, warnings
 warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from common_pure import *
+from common import *
 import numpy as np
 from scipy.linalg import cholesky, solve_triangular
 from scipy.stats import norm
-from multiprocessing import Pool, cpu_count
 
-# ====================================================================
-# FY1已知最优解 (问题二)
-# ====================================================================
-FY1_OPT_X = (2.80, 17603.0, 5.0, 1765.0)
-FY1_OPT_TEFF = safe_compute_T_eff(FY1_OPT_X[:3], FY1_OPT_X[0], missile='M1')
+T_FLIGHT = MISSILE_T_FLIGHT['M1']  # ≈ 67.0s
 
 DRONE_CONFIGS = [
     ('FY1', FY1_0, 1800.0),
@@ -36,27 +30,24 @@ DRONE_CONFIGS = [
     ('FY3', FY3_0, 700.0),
 ]
 
-T_FLIGHT = MISSILE_T_FLIGHT['M1']  # ≈ 67.0s
+# ====================================================================
+# FY1已知最优解 (问题二)
+# ====================================================================
+FY1_OPT_X = (2.80, 17603.0, 5.0, 1765.0)
+FY1_OPT_TEFF = compute_T_eff(np.array([17603.0, 5.0, 1765.0]), 2.80, missile='M1')
 
 # ====================================================================
 # 导弹运动 (物理引导用)
 # ====================================================================
-def _norm3(v):
-    d = math.sqrt(v[0]**2 + v[1]**2 + v[2]**2)
-    return (v[0]/d, v[1]/d, v[2]/d) if d > 1e-10 else (0.0, 0.0, 0.0)
-
-def _sub3(a, b):
-    return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
-
-_M1_DIR = _norm3(_sub3(O_DECOY, M1_0))
+_M1_DIR = (O_DECOY - M1_0) / np.linalg.norm(O_DECOY - M1_0)
 
 def M1_pos(t):
-    return (M1_0[0] + _M1_DIR[0] * VM * t,
-            M1_0[1] + _M1_DIR[1] * VM * t,
-            M1_0[2] + _M1_DIR[2] * VM * t)
+    return (float(M1_0[0] + _M1_DIR[0] * VM * t),
+            float(M1_0[1] + _M1_DIR[1] * VM * t),
+            float(M1_0[2] + _M1_DIR[2] * VM * t))
 
 # ====================================================================
-# 约束惩罚
+# 约束惩罚与目标函数
 # ====================================================================
 def constraint_penalty(x, drone_start, drone_z):
     t_det, A_x, A_y, A_z = float(x[0]), float(x[1]), float(x[2]), float(x[3])
@@ -69,18 +60,18 @@ def constraint_penalty(x, drone_start, drone_z):
         v_needed = dist_h / t_det
         if v_needed < V_MIN: pen += (V_MIN - v_needed) / V_MIN
         if v_needed > V_MAX: pen += (v_needed - V_MAX) / V_MAX
-        t_fall = math.sqrt(max(0, 2 * (drone_z - A_z) / G))
-        t_rel = t_det - t_fall
+        t_fall_val = math.sqrt(max(0, 2 * (drone_z - A_z) / G))
+        t_rel = t_det - t_fall_val
         if t_rel < 0: pen += abs(t_rel) / max(1.0, t_det)
     return pen
 
 def objective_single(x, drone_start, drone_z):
     t_det, Ax, Ay, Az = float(x[0]), float(x[1]), float(x[2]), float(x[3])
-    Ad = (Ax, Ay, Az)
+    Ad = np.array([Ax, Ay, Az])
     feas = drone_feasible(Ad, t_det, drone_start=drone_start, drone_z=drone_z)
     if feas is None:
         return -constraint_penalty(x, drone_start, drone_z)
-    dur = safe_compute_T_eff(Ad, t_det, missile='M1')
+    dur = compute_T_eff(Ad, t_det, missile='M1')
     return max(0.0, dur)
 
 # ====================================================================
@@ -89,15 +80,15 @@ def objective_single(x, drone_start, drone_z):
 def physics_guided_search(drone_start, drone_z, n_samples=15000, seed=42):
     """
     物理引导随机搜索: 在导弹-目标连线附近采样起爆点
-    利用几何先验大幅提升命中率
     """
-    random.seed(seed)
-    best_T = -1.0; best_x = None; n_feas = 0; n_eff = 0
+    random.seed(seed); np.random.seed(seed)
+    dr_x, dr_y = float(drone_start[0]), float(drone_start[1])
+    best_T = -1.0; best_x = None; n_feas = 0; n_eff = 0; n_err = 0
 
-    t_min = max(5.0, math.sqrt((drone_start[1])**2) / V_MAX * 1.2)
+    t_min = max(5.0, abs(dr_y) / V_MAX * 1.2)
     t_max = min(T_FLIGHT - 10, 55.0)
 
-    for _ in range(n_samples):
+    for k in range(n_samples):
         td = random.uniform(t_min, t_max)
         Mt = M1_pos(td)
 
@@ -111,19 +102,25 @@ def physics_guided_search(drone_start, drone_z, n_samples=15000, seed=42):
         Ay = max(-5500.0, min(5000.0, Ay))
         Az = max(50.0, min(drone_z - 10.0, Az))
 
-        Ad = (Ax, Ay, Az)
+        Ad = np.array([Ax, Ay, Az])
         feas = drone_feasible(Ad, td, drone_start=drone_start, drone_z=drone_z)
         if feas is None: continue
         n_feas += 1
 
-        T = safe_compute_T_eff(Ad, td, missile='M1')
-        if T > 0: n_eff += 1
-        if T > best_T:
-            best_T = T
-            best_x = (td, Ax, Ay, Az, feas)
+        try:
+            T = compute_T_eff(Ad, td, missile='M1')
+            if T > 0: n_eff += 1
+            if T > best_T:
+                best_T = T
+                best_x = (td, Ax, Ay, Az, feas)
+        except Exception:
+            n_err += 1
+            if n_err > 10: break
+
+        if (k + 1) % 5000 == 0:
+            gc.collect()
 
     return best_x, best_T, n_feas, n_eff
-
 
 # ====================================================================
 # GP + BO (与问题二相同)
@@ -215,14 +212,14 @@ def bayesian_optimize(obj_fn, lb, ub, n_init=30, n_iter=120, seed=42,
     return x_best, y_best
 
 # ====================================================================
-# 联合目标函数 (12D)
+# 联合目标函数 (12D) — 使用common.py的multi_bomb_T_eff
 # ====================================================================
 def joint_T_eff(x):
     bombs = []
     total_penalty = 0.0
     for i, (name, drone_start, drone_z) in enumerate(DRONE_CONFIGS):
         base = 4 * i
-        td = x[base]; Ad = (x[base+1], x[base+2], x[base+3])
+        td = x[base]; Ad = np.array([x[base+1], x[base+2], x[base+3]])
         feas = drone_feasible(Ad, td, drone_start=drone_start, drone_z=drone_z)
         if feas is None:
             total_penalty += constraint_penalty(x[base:base+4], drone_start, drone_z)
@@ -241,15 +238,15 @@ def cma_objective(x):
     return -val
 
 # ====================================================================
-# 结果构建
+# 结果构建 & 保存
 # ====================================================================
 def build_result(x_opt):
     bombs_info = []
     for i, (name, drone_start, drone_z) in enumerate(DRONE_CONFIGS):
         base = 4 * i
-        td = x_opt[base]; Ad = (x_opt[base+1], x_opt[base+2], x_opt[base+3])
+        td = x_opt[base]; Ad = np.array([x_opt[base+1], x_opt[base+2], x_opt[base+3]])
         feas = drone_feasible(Ad, td, drone_start=drone_start, drone_z=drone_z)
-        T_s = safe_compute_T_eff(Ad, td, missile='M1')
+        T_s = compute_T_eff(Ad, td, missile='M1')
         ivs = compute_T_eff_intervals(Ad, td, missile='M1') if T_s > 0 else []
         if feas:
             v = feas['v']; theta_deg = math.degrees(feas['theta']) % 360
@@ -302,6 +299,7 @@ def save_to_result2(result):
         return xlsx_path
     except Exception as e:
         print(f"  [WARN] xlsx write failed: {e}")
+        from common import save_result_xlsx
         out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'result2_out.xlsx')
         save_result_xlsx({'summary': result['summary'],
                           'bombs': [{k: bi[k] for k in ['drone', 't_release', 't_det', 'A_x', 'A_y', 'A_z', 'T_eff', 'v', 'theta']} for bi in result['bombs']],
@@ -315,8 +313,8 @@ def save_to_result2(result):
 if __name__ == "__main__":
     t_start = time.time()
     print("=" * 70)
-    print("问题4: FY1 + FY2 + FY3 各投放1枚烟幕干扰弹 → M1")
-    print(f"M1飞行时间: {T_FLIGHT:.1f}s | 策略: 物理引导+BO+CMA-ES")
+    print("问题4 v2: FY1 + FY2 + FY3 各投放1枚烟幕干扰弹 → M1")
+    print(f"M1飞行时间: {T_FLIGHT:.1f}s | 策略: 物理引导+BO+CMA-ES (common.py)")
     print("=" * 70)
 
     # ================================================================
@@ -326,7 +324,6 @@ if __name__ == "__main__":
     print("Phase 0: 锚点搜索")
     print(f"{'─'*70}")
 
-    # FY1: 使用问题二结果
     print(f"  FY1: 问题二锚点 T_eff={FY1_OPT_TEFF:.4f}s "
           f"x=[{FY1_OPT_X[0]:.2f},{FY1_OPT_X[1]:.0f},{FY1_OPT_X[2]:.0f},{FY1_OPT_X[3]:.0f}]")
 
@@ -340,29 +337,34 @@ if __name__ == "__main__":
         print(f"       td={td:.2f}s A=({Ax:.0f},{Ay:.0f},{Az:.0f}) "
               f"v={feas['v']:.1f}m/s th={math.degrees(feas['theta']):.0f}°")
     if fy2_x is None or fy2_T <= 0:
-        print(f"  [FALLBACK] FY2 未找到有效点, 使用启发式默认")
+        print(f"  [FALLBACK] FY2 未找到有效点")
         fy2_x = (20.0, 9000.0, 50.0, 900.0, {'v': 100.0, 'theta': math.atan2(50-1400, 9000-12000)})
         fy2_T = 0.0
 
+    gc.collect()
+    print(f"  [GC] 内存回收完成")
+
     # FY3: 物理引导搜索
-    print(f"\n  FY3 物理引导搜索 (15000点)...")
+    print(f"\n  FY3 物理引导搜索 (10000点)...")
     t0 = time.time()
-    fy3_x, fy3_T, fy3_feas, fy3_eff = physics_guided_search(FY3_0, 700.0, n_samples=15000, seed=123)
+    fy3_x, fy3_T, fy3_feas, fy3_eff = physics_guided_search(FY3_0, 700.0, n_samples=10000, seed=123)
     print(f"  FY3: {fy3_feas} feas, {fy3_eff} eff | T_eff={fy3_T:.4f}s ({time.time()-t0:.1f}s)")
     if fy3_x:
         td, Ax, Ay, Az, feas = fy3_x
         print(f"       td={td:.2f}s A=({Ax:.0f},{Ay:.0f},{Az:.0f}) "
               f"v={feas['v']:.1f}m/s th={math.degrees(feas['theta']):.0f}°")
     if fy3_x is None or fy3_T <= 0:
-        print(f"  [FALLBACK] FY3 未找到有效点, 使用启发式默认")
-        fy3_x = (35.0, 4000.0, -500.0, 400.0, {'v': 100.0, 'theta': math.atan2(-500+3000, 4000-6000)})
+        print(f"  [FALLBACK] FY3 未找到有效点")
+        fy3_x = (35.0, 2500.0, -500.0, 400.0, {'v': 100.0, 'theta': math.atan2(2500, -3500)})
         fy3_T = 0.0
+
+    gc.collect()
 
     # Phase 0 汇总
     phase0 = [
-        ('FY1', FY1_OPT_X, FY1_OPT_TEFF),
-        ('FY2', (fy2_x[0], fy2_x[1], fy2_x[2], fy2_x[3]), fy2_T),
-        ('FY3', (fy3_x[0], fy3_x[1], fy3_x[2], fy3_x[3]), fy3_T),
+        ('FY1', np.array(FY1_OPT_X), FY1_OPT_TEFF),
+        ('FY2', np.array([fy2_x[0], fy2_x[1], fy2_x[2], fy2_x[3]]), fy2_T),
+        ('FY3', np.array([fy3_x[0], fy3_x[1], fy3_x[2], fy3_x[3]]), fy3_T),
     ]
     print(f"\n  Phase 0 汇总:")
     for nm, xo, To in phase0:
@@ -379,7 +381,7 @@ if __name__ == "__main__":
 
     # FY2 BO
     if fy2_T > 0:
-        c2 = fy2_x[:4]
+        c2 = (fy2_x[0], fy2_x[1], fy2_x[2], fy2_x[3])
         lb2 = np.array([max(0.5, c2[0]-10), max(500, c2[1]-5000),
                         max(-5500, c2[2]-2000), max(50, c2[3]-500)])
         ub2 = np.array([min(T_FLIGHT-5, c2[0]+10), min(17800, c2[1]+4000),
@@ -390,12 +392,13 @@ if __name__ == "__main__":
         fy2_bo_x, fy2_bo_T = bayesian_optimize(
             obj2, lb2, ub2, n_init=30, n_iter=100, seed=42,
             known_points=known2, verbose=True)
+        gc.collect()
     else:
         fy2_bo_x, fy2_bo_T = np.array(fy2_x[:4]), fy2_T
 
     # FY3 BO
     if fy3_T > 0:
-        c3 = fy3_x[:4]
+        c3 = (fy3_x[0], fy3_x[1], fy3_x[2], fy3_x[3])
         lb3 = np.array([max(0.5, c3[0]-15), max(500, c3[1]-4000),
                         max(-5500, c3[2]-2000), max(50, c3[3]-300)])
         ub3 = np.array([min(T_FLIGHT-5, c3[0]+15), min(17800, c3[1]+4000),
@@ -406,6 +409,7 @@ if __name__ == "__main__":
         fy3_bo_x, fy3_bo_T = bayesian_optimize(
             obj3, lb3, ub3, n_init=30, n_iter=100, seed=123,
             known_points=known3, verbose=True)
+        gc.collect()
     else:
         fy3_bo_x, fy3_bo_T = np.array(fy3_x[:4]), fy3_T
 
@@ -428,9 +432,8 @@ if __name__ == "__main__":
 
     x0_joint = np.concatenate([p[1] for p in phase1])
     init_val = joint_T_eff(x0_joint)
-    print(f"  初始解: T_eff = {init_val:.4f}s")
+    print(f"  初始解 (拼接并集): T_eff = {init_val:.4f}s")
 
-    # 构建边界: FY1收紧, FY2/FY3放宽
     def make_bounds(cx, dz, tight=False):
         td_c, Ax_c, Ay_c, Az_c = float(cx[0]), float(cx[1]), float(cx[2]), float(cx[3])
         s = 0.1 if tight else 0.5
@@ -514,12 +517,11 @@ if __name__ == "__main__":
     if FY1_OPT_TEFF > 0:
         print(f"    提升 (vs FY1单弹): {final_teff/FY1_OPT_TEFF:.2f}x")
 
-    # 保存
     print(f"\n  保存到 result2.xlsx...")
     save_to_result2(result)
 
     elapsed = time.time() - t_start
     print(f"\n{'='*70}")
-    print(f"问题4 完成! (总耗时 {elapsed:.1f}s)")
+    print(f"问题4 v2 完成! (总耗时 {elapsed:.1f}s)")
     print(f"协同遮蔽时长: {final_teff:.4f}s | 覆盖率: {result['summary']['Coverage(%)']:.2f}%")
     print(f"{'='*70}")
