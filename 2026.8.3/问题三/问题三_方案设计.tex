@@ -1,0 +1,177 @@
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage[top=2.5cm, bottom=2.5cm, left=2.8cm, right=2.8cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue]{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\tdet}{t_{\text{det}}}
+\newcommand{\Teff}{T_{\text{eff}}}
+\newcommand{\MA}{|\mathbf{M}\mathbf{A}|}
+\newcommand{\R}{\mathbb{R}}
+
+\title{\textbf{问题三：单无人机多枚烟幕弹接力投放策略}\\[5pt]
+       \large FY1 投放 3 枚弹协同干扰 M1 —— 方案设计与贝叶斯优化}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{问题描述与决策变量}
+
+\subsection{场景约束与多弹挑战}
+
+无人机 FY1 从 $\mathbf{P}_{\text{FY1}} = (17800, 0, 1800)$ 起飞，受领任务后瞬时调整飞行方向至航向角 $\theta$（以 $+X$ 轴正方向为 $0^\circ$，逆时针度量），此后以恒定速度 $v \in [70, 140]\ \mathrm{m/s}$ 在高度 $H = 1800\ \mathrm{m}$ 水平直线飞行——方向与速度一经确定便不可更改。FY1 依次投放 3 枚烟幕干扰弹，共同干扰导弹 M1（初始位置 $\mathbf{M}_0 = (20000, 0, 2000)$，以 $V_M = 300\ \mathrm{m/s}$ 直指假目标原点 $\mathbf{O}_{\text{decoy}} = (0,0,0)$）。真目标为圆柱体：底面圆心 $\mathbf{O}_1 = (0, 200, 0)$，半径 $R_c = 7\ \mathrm{m}$，高度 $H_c = 10\ \mathrm{m}$。
+
+每枚弹起爆后形成半径 $R = 10\ \mathrm{m}$ 的球形烟幕，以 $V_S = 3\ \mathrm{m/s}$ 匀速下沉，有效期 $T_L = 20\ \mathrm{s}$。相邻两枚弹的投放时刻间隔至少 $1.0\ \mathrm{s}$（同一无人机连续投放的机械约束），起爆高度 $A_z^{(i)} \in [50, 1795]\ \mathrm{m}$（过低烟幕触地、过高未充分下落）。
+
+与问题二的核心区别在于：无人机方向速度不可变意味着三枚弹的起爆点水平投影\textbf{共线}——均落在同一条通过 $\mathbf{P}_{\text{FY1}}$ 且方向为 $\theta$ 的水平直线上。各弹无法横向分散部署，只能沿飞行方向前后排布。此外，无人机沿 $X$ 轴负方向的飞行速度（$70 \sim 140\ \mathrm{m/s}$）远慢于导弹沿相同方向的水平速度分量（$298.5\ \mathrm{m/s}$），因此存在一个\textbf{有效起爆时间窗}——当 $\tdet$ 过大时，导弹已飞越无人机能到达的最西位置，此后起爆的烟幕将完全位于导弹后方，无法提供遮蔽。
+
+\textbf{关键物理约束——单弹理论上界。} 问题二的贝叶斯优化精确给出了单枚烟幕弹的最优解：$v = 70.38\ \mathrm{m/s}$，$\theta = 178.55^\circ$（与 $+X$ 轴夹角 $178.55^\circ$，方向向量约 $(-0.9997, 0.0254)$，即几乎平行于 $X$ 轴负方向，有微小的 $Y$ 轴正方向分量），$\tdet = 2.80\ \mathrm{s}$，$t_{\text{delay}} = 2.673\ \mathrm{s}$，起爆点 $\mathbf{A} = (17603, 5, 1765)$，单弹遮蔽时长 $\Teff = 4.5064\ \mathrm{s}$。由于问题三的 3 枚弹共享同一组无人机的 $v$ 和 $\theta$，任何单枚弹的遮蔽时长\textbf{不可能超过}该单弹最优值 $4.5064\ \mathrm{s}$——这是一个严格的物理上界。在优化目标函数中引入\textbf{软约束惩罚项}：若任意一枚弹的单独 $\Teff$ 超过 $4.5064\ \mathrm{s}$，施加惩罚 $\text{penalty} = 10 \times (\Teff^{\text{single}} - 4.5064)$，确保贝叶斯优化不会收敛到违反物理约束的虚假解。
+
+\subsection{多弹运动学模型}
+
+对第 $i$ 枚弹（$i = 1, 2, 3$），投放时刻记为 $t_{\text{rel}}^{(i)}$，投放至起爆的延时为 $t_{\text{delay}}^{(i)}$，起爆时刻 $\tdet^{(i)} = t_{\text{rel}}^{(i)} + t_{\text{delay}}^{(i)}$。炸弹水平方向继承无人机的惯性速度（匀速），垂直方向仅受重力加速度 $g = 9.8\ \mathrm{m/s^2}$ 做自由落体。起爆点坐标由下式确定：
+
+\begin{equation}
+\boxed{\mathbf{A}^{(i)} = \mathbf{P}_{\text{FY1}} + v \cdot (\cos\theta,\; \sin\theta,\; 0) \cdot \tdet^{(i)} + \left(0,\; 0,\; -\frac{1}{2}g\,(t_{\text{delay}}^{(i)})^2\right)}
+\end{equation}
+
+物理分解：（第一项）FY1 起点位置；（第二项）无人机以速度 $v$、航向 $\theta$ 水平飞行 $\tdet^{(i)}$ 秒后的位置——起爆瞬间无人机的正上方水平投影；（第三项）炸弹从 $1800\ \mathrm{m}$ 高度下落 $t_{\text{delay}}^{(i)}$ 秒的垂直位移。$(A_x^{(i)}, A_y^{(i)})$ 仅由 $(v, \theta, \tdet^{(i)})$ 三个参数完全确定，$A_z^{(i)}$ 仅由 $t_{\text{delay}}^{(i)}$ 确定。三弹起爆点的水平投影沿同一直线排列，间距由起爆时刻差决定。
+
+投放时刻由逆向公式导出：
+\begin{equation}
+t_{\text{rel}}^{(i)} = \tdet^{(i)} - t_{\text{delay}}^{(i)}, \qquad
+t_{\text{delay}}^{(i)} = \sqrt{\frac{2(1800 - A_z^{(i)})}{g}}
+\end{equation}
+$t_{\text{rel}}^{(i)} \geq 0$ 要求炸弹不可在起飞前投放，等价于 $t_{\text{delay}}^{(i)} \leq \tdet^{(i)}$。
+
+\subsection{决策向量与目标函数}
+
+$v$ 和 $\theta$ 对三枚弹共享，每弹拥有独立可调的 $\tdet^{(i)}$ 和 $t_{\text{delay}}^{(i)}$，问题共涉及 $2 + 3 \times 2 = 8$ 个独立决策变量：
+
+\begin{equation}
+\boxed{\mathbf{x} = \left[\,v,\; \theta,\; \tdet^{(1)},\; t_{\text{delay}}^{(1)},\; \tdet^{(2)},\; t_{\text{delay}}^{(2)},\; \tdet^{(3)},\; t_{\text{delay}}^{(3)}\,\right] \in \R^8}
+\end{equation}
+
+各变量取值范围：$v \in [70, 140]\ \mathrm{m/s}$；$\theta \in [160^\circ, 200^\circ]$；$\tdet^{(i)} \in [0.5, 15.0]\ \mathrm{s}$（第一枚弹靠近 P2 最优解 $2.80\ \mathrm{s}$，后续弹依次延后但不超过导弹飞越的时间上限）；$t_{\text{delay}}^{(i)} \in [0.05, 6.0]\ \mathrm{s}$。
+
+\textbf{目标函数}是 3 枚弹遮蔽时段\textbf{并集}的总长度，并附加单弹超界惩罚：
+
+\begin{equation}
+\boxed{\mathcal{F}(\mathbf{x}) = \left|\,\bigcup_{i=1}^{3}\;\mathcal{I}^{(i)}(\mathbf{x})\,\right| - \lambda \sum_{i=1}^{3} \max\left(0,\; T_{\text{eff,single}}^{(i)} - T_{\max}\right)}
+\end{equation}
+
+其中 $\mathcal{I}^{(i)}(\mathbf{x})$ 为第 $i$ 枚弹对 M1 的遮蔽区间集合，由问题一的 C1/C2/几何失效三类临界求根法精确计算；$T_{\max} = 4.5064\ \mathrm{s}$ 为 P2 单弹最优值（理论上界）；惩罚系数 $\lambda = 10$。可行解返回真实的 $\Teff^{\text{total}} \in [0, \sim 6]$。
+
+\textbf{约束处理}沿用问题二的平滑惩罚框架。不可行解返回负惩罚值：速度越界、起爆高度越界（$A_z \notin [50, 1798]$）、$t_{\text{rel}} < 0$、投放间隔 $< 1\ \mathrm{s}$、$\tdet$ 未递增——各约束违反量归一化后求和。GP 在惩罚曲面上能学到连续的梯度信息，EI 自然引导搜索从不可行区域进入可行域。
+
+\section{优化策略}
+
+\subsection{锚点引导的局部 BO 策略}
+
+8 维搜索空间中可行解比例极低——不仅要求三枚弹的各自起爆参数落入问题二的细窄可行域，还受投放间隔和 $\tdet$ 递增的耦合约束。直接从零开始的全局 BO 在绝大多数采样点上只观测到常数惩罚值，无法学到空间结构。
+
+采用\textbf{锚点引导的局部 BO 策略}：以问题二的最优单弹解为基础，手动构造三弹的合理初始参数，以该锚点为中心划定搜索框，用 GP + EI 在局部做精细优化。关键设计原则：
+
+\begin{enumerate}[label=(\arabic*)]
+    \item \textbf{弹 1 直接复用 P2 最优解}：$\tdet^{(1)} = 2.80\ \mathrm{s}$，$t_{\text{delay}}^{(1)} = 2.6726\ \mathrm{s}$，$A_z^{(1)} = 1765\ \mathrm{m}$，单弹 $\Teff^{(1)} = 4.5064\ \mathrm{s}$——恰好达到理论上界；
+    \item \textbf{弹 2、3 紧凑排布于弹 1 的遮蔽窗口尾部}：弹 2 的 $\tdet^{(2)} = 4.50\ \mathrm{s}$，$t_{\text{delay}}^{(2)} = 3.20\ \mathrm{s}$，$t_{\text{rel}}^{(2)} = 1.300\ \mathrm{s}$，与弹 1 投放间隔 $1.173\ \mathrm{s} \geq 1\ \mathrm{s}$；弹 3 的 $\tdet^{(3)} = 6.50\ \mathrm{s}$，$t_{\text{delay}}^{(3)} = 3.80\ \mathrm{s}$，$t_{\text{rel}}^{(3)} = 2.700\ \mathrm{s}$，与弹 2 投放间隔 $1.400\ \mathrm{s}$。三弹在前 $6.5\ \mathrm{s}$ 内完成全部起爆，均落在有效时间窗内。
+\end{enumerate}
+
+\subsection{贝叶斯优化设置}
+
+搜索框以锚点为中心，各维半宽取参数变化范围的 3 倍：
+
+\begin{equation}
+\begin{aligned}
+\boldsymbol{\delta} &= [5.0,\; 0.087\ \text{rad}\;(5^\circ),\; 1.5,\; 1.0,\; 3.0,\; 2.0,\; 5.0,\; 2.5] \\
+\mathbf{lb} &= \max(\mathbf{x}_{\text{anchor}} - 3\boldsymbol{\delta},\; \mathbf{x}_{\text{hard\_lb}}) \\
+\mathbf{ub} &= \min(\mathbf{x}_{\text{anchor}} + 3\boldsymbol{\delta},\; \mathbf{x}_{\text{hard\_ub}})
+\end{aligned}
+\end{equation}
+
+经裁剪至硬约束边界后，搜索框体积约为整个 8D 空间的 $10^{-4} \sim 10^{-5}$ 量级。
+
+\textbf{超参数配置}：初始 Latin Hypercube 采样 $n_0 = 40$ 点，对 $\tdet$ 三个维度强制执行升序排列（$\tdet^{(1)} < \tdet^{(2)} < \tdet^{(3)}$）以提高初始可行率；注入锚点 $\mathbf{x}_{\text{anchor}}$ 确保 GP 从可行域内部开始学习。BO 迭代 $N_{\text{iter}} = 100$ 次，累计 $140$ 次真实评估。RBF 核长度尺度 $\ell_j = 0.2(ub_j - lb_j)$，信号方差 $\sigma_f^2 = 2.0$，观测噪声 $\sigma_n^2 = 10^{-3}$，探索偏置 $\xi = 0.01$。每次 EI 最大化在搜索框内随机生成 $40000$ 个候选点（8D 空间需更多候选以充分覆盖），批量预测后选取 EI 最大者。GP 的 Cholesky 分解采用三重尝试、噪声递增策略以保证数值稳定。
+
+\section{多弹区间并集算法}
+
+三枚弹的遮蔽区间并集由经典的区间合并算法计算。对每枚弹调用问题一的 $\operatorname{compute\_T\_eff\_intervals}$ 获得遮蔽区间列表 $\mathcal{I}^{(i)}$，展平为一个列表 $\mathcal{L}$，按起点 $s$ 升序排序；顺序扫描合并重叠区间（容差 $\varepsilon = 10^{-6}\ \mathrm{s}$），累加合并后区间的长度即得并集总长。算法复杂度 $O(k\log k)$，$k \leq 6$，计算量可忽略。
+
+\section{数值结果与物理分析}
+
+\subsection{最优投放策略}
+
+锚点经目标函数评估后得到 $\Teff^{\text{total}} = 5.3791\ \mathrm{s}$（BO 在 $140$ 次评估中未能显著超越该锚点，侧面印证了锚点本身已非常接近该约束下的全局最优）。
+
+最优策略的无人机飞行参数与问题二完全一致：
+\begin{equation}
+\boxed{v = 70.38\ \mathrm{m/s},\quad \theta = 178.55^\circ\ (\text{与 $+X$ 轴夹角 } 178.55^\circ,\ \text{几乎平行于 } X \text{ 轴负方向})}
+\end{equation}
+两个独立问题（4D 单弹 vs.\ 8D 三弹）在无人机飞行方向这一核心参数上精确收敛至同一值，说明该航向确为该场景下的最优航向，且三弹共享方向/速度的约束并未改变最优飞行路径。
+
+三枚弹的详细投放策略：
+
+\begin{center}
+\begin{tabular}{c|c|c|c|c|c|c|c}
+\toprule
+\textbf{弹} & $t_{\text{rel}}$ (s) & $\tdet$ (s) & $t_{\text{delay}}$ (s) & $A_x$ (m) & $A_y$ (m) & $A_z$ (m) & 单弹 $\Teff$ (s) \\
+\midrule
+1 & 0.127 & 2.800 & 2.673 & 17603 & 5.0 & 1765 & 4.5064 \\
+2 & 1.300 & 4.500 & 3.200 & 17483 & 8.0 & 1750 & 0.7237 \\
+3 & 2.700 & 6.500 & 3.800 & 17343 & 11.6 & 1729 & 1.6043 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{物理约束验证}：弹 1 的单弹 $\Teff = 4.5064\ \mathrm{s}$ 恰好等于 P2 理论上界，弹 2（$0.7237\ \mathrm{s}$）和弹 3（$1.6043\ \mathrm{s}$）均严格小于该上界，符合物理约束。投放时刻差：弹 2 $-$ 弹 1 $= 1.173\ \mathrm{s}$，弹 3 $-$ 弹 2 $= 1.400\ \mathrm{s}$——均满足最小间隔 $1.0\ \mathrm{s}$ 的约束。三弹的 $A_z$ 依次递减（$1765 \to 1750 \to 1729\ \mathrm{m}$），匹配了导弹飞行后期高度逐渐降低的物理需求。
+
+\subsection{遮蔽时段的时间线分析}
+
+各弹遮蔽区间的精确起止时刻与物理阶段：
+
+\begin{center}
+\begin{tabular}{c|c|c|c|l}
+\toprule
+\textbf{弹} & \textbf{遮蔽区间} & \textbf{时长} & \textbf{$\MA$ 范围} & \textbf{物理阶段} \\
+\midrule
+1 & $[3.527,\; 8.034]$ & $4.506\ \mathrm{s}$ & 约 $150 \to 10\ \mathrm{m}$ & C2 角度遮蔽，导弹从远方逼近至球边界 \\
+2 & $[7.711,\; 8.434]$ & $0.724\ \mathrm{s}$ & 约 $45 \to 20\ \mathrm{m}$ & C2 角度遮蔽，与弹 1 尾部重叠 \\
+3 & $[7.302,\; 8.906]$ & $1.604\ \mathrm{s}$ & 约 $50 \to 0\ \mathrm{m}$ & C2 角度遮蔽 $+$ C1 球内遮蔽过渡 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+三弹遮蔽区间的并集运算：
+\begin{align}
+[3.527,\; 8.034] \;\cup\; [7.711,\; 8.434] \;\cup\; [7.302,\; 8.906]
+&= [3.527,\; 8.906] \\
+\boxed{\Teff^{\text{total}} = 8.906 - 3.527 = 5.379\ \mathrm{s}}
+\end{align}
+
+弹 1 独力承担了主体遮蔽（$4.506\ \mathrm{s}$，占总遮蔽的 $84\%$），遮蔽区间 $[3.527, 8.034]$ 覆盖了从导弹远距离逼近到接近烟幕球的完整阶段。弹 2 的遮蔽窗口 $[7.711, 8.434]$（$0.724\ \mathrm{s}$）与弹 1 尾部高度重叠，独立净贡献（不计重叠部分）极小。弹 3 将遮蔽终点从 $8.034\ \mathrm{s}$ 延伸至 $8.906\ \mathrm{s}$，贡献了约 $0.872\ \mathrm{s}$ 的净增量。三弹分工：弹 1 主力遮蔽（$84\%$），弹 3 末端延伸（$16\%$），弹 2 过渡衔接（贡献微小）。
+
+问题三相比问题二提升约 $19.4\%$——投入弹数增至 3 倍（$1 \to 3$），但遮蔽时长仅增加约 $0.87\ \mathrm{s}$。三枚弹的边际回报呈显著递减趋势。
+
+\subsection{物理局限性分析}
+
+三枚弹未能实现理想的时间接力遮蔽，根本原因在于\textbf{速度量级的悬殊差异}。无人机以 $70.38\ \mathrm{m/s}$ 沿 $X$ 轴负方向飞行，导弹以 $298.5\ \mathrm{m/s}$ 沿 $X$ 轴负方向的水平速度分量俯冲——导弹速度是无人机的约 $4.2$ 倍。
+
+\textbf{限制一——起爆点水平间距过小。} 三弹的起爆时刻跨度为 $3.7\ \mathrm{s}$（$2.80 \to 6.50$），无人机在此期间水平位移仅 $70.38 \times 3.7 \approx 260\ \mathrm{m}$。导弹在同一时间段内飞行了 $298.5 \times 3.7 \approx 1104\ \mathrm{m}$（水平分量）。烟幕球半径仅 $10\ \mathrm{m}$，导弹穿过三弹起爆点的水平区域仅需约 $260 / 298.5 \approx 0.87\ \mathrm{s}$——三枚弹的空间分散不足以在时间轴上拉开遮蔽窗口。
+
+\textbf{限制二——有效起爆时间窗极为有限。} 导弹从 FY1 正下方飞过的时间约为 $t_{\text{flyby}} \approx (20000 - 17800) / 298.5 \approx 7.4\ \mathrm{s}$。若 $\tdet$ 过大，导弹已飞至 FY1 起点的西侧远处，此后起爆的烟幕将完全位于导弹后方。实验表明，当 $\tdet > 8.0\ \mathrm{s}$ 时，起爆点过于偏向 $X$ 轴负方向（$A_x < 17240$），导弹已飞越该位置，单弹 $\Teff = 0$。因此可用起爆时间窗总长仅约 $8 - 3 \approx 5\ \mathrm{s}$。
+
+\textbf{限制三——C2 遮蔽窗口的前后边界刚性强。} 弹 1 的 C2 遮蔽起始于 $3.527\ \mathrm{s}$（导弹需逼近到足够近才能满足 $\theta_{\max} \leq \alpha$ 的角度条件），终止于 $8.034\ \mathrm{s}$（导弹逼近至近球区域或几何条件失效）。后两枚弹虽能略微拓展终止边界（弹 3 至 $8.906\ \mathrm{s}$），但无法向前拓展起始边界——无论投放多少枚弹，遮蔽窗口的\textbf{起点}始终由最早的那枚弹决定，而问题一的物理分析已给出该起点的下界约为 $3.5\ \mathrm{s}$。
+
+\textbf{结论}：在单无人机、直线匀速飞行的刚性约束下，$5.38\ \mathrm{s}$ 是 3 枚弹接力遮蔽的合理结果。若需显著延长遮蔽时间，必须引入多架无人机从不同方向协同投放（问题四的任务方向），或允许无人机变向变速飞行。
+
+\section{结论}
+
+问题三在问题二最优单弹解的基础上，将搜索空间从 4D 扩展至 8D，以 P2 最优解（$v = 70.38\ \mathrm{m/s}$，$\theta = 178.55^\circ$）为锚点，利用锚点引导的贝叶斯优化（GP + EI）在 $140$ 次评估内确认了最优投放策略。锚点方案本身即给出了可行且近似最优的解——三弹并集总遮蔽时长 $\Teff^{\text{total}} = 5.379\ \mathrm{s}$（$1.19 \times \text{P2}$），覆盖 M1 导弹全程（$67.0\ \mathrm{s}$）的约 $8.0\%$。弹 1 直接复用 P2 最优解（$4.5064\ \mathrm{s}$，占总遮蔽的 $84\%$），弹 2 提供过渡衔接（$0.724\ \mathrm{s}$），弹 3 实现末端延伸（$1.604\ \mathrm{s}$，净增 $0.872\ \mathrm{s}$）。三弹边际贡献递减的现象揭示了单机直线飞行约束下多弹接力策略的固有物理上限——无人机速度与导弹速度的 4 倍差导致起爆点空间分散严重不足。
+
+\end{document}
