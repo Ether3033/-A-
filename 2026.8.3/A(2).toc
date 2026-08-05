@@ -1,0 +1,46 @@
+\contentsline {section}{\numberline {1}问题重述}{4}{}%
+\contentsline {subsection}{\numberline {1.1}问题背景}{4}{}%
+\contentsline {subsection}{\numberline {1.2}问题提出}{4}{}%
+\contentsline {section}{\numberline {2}问题分析}{4}{}%
+\contentsline {subsection}{\numberline {2.1}问题一}{4}{}%
+\contentsline {subsection}{\numberline {2.2}问题二}{4}{}%
+\contentsline {subsection}{\numberline {2.3}问题三}{5}{}%
+\contentsline {subsection}{\numberline {2.4}问题四}{5}{}%
+\contentsline {subsection}{\numberline {2.5}问题五}{5}{}%
+\contentsline {section}{\numberline {3}模型假设}{5}{}%
+\contentsline {section}{\numberline {4}符号说明}{5}{}%
+\contentsline {section}{\numberline {5}模型准备}{6}{}%
+\contentsline {subsection}{\numberline {5.1}建系}{6}{}%
+\contentsline {subsection}{\numberline {5.2}无人机抛弹与烟幕运动}{7}{}%
+\contentsline {subsection}{\numberline {5.3}遮蔽判断模型}{7}{}%
+\contentsline {subsubsection}{\numberline {5.3.1}单位球面映射}{8}{}%
+\contentsline {subsubsection}{\numberline {5.3.2}圆柱面的投影}{8}{}%
+\contentsline {subsubsection}{\numberline {5.3.3}烟幕球投影区域}{9}{}%
+\contentsline {subsubsection}{\numberline {5.3.4}遮蔽判定}{9}{}%
+\contentsline {subsubsection}{\numberline {5.3.5}有效遮蔽约束}{10}{}%
+\contentsline {section}{\numberline {6}问题一求解}{10}{}%
+\contentsline {subsection}{\numberline {6.1}运动学模型}{11}{}%
+\contentsline {subsubsection}{\numberline {6.1.1}导弹运动方程}{11}{}%
+\contentsline {subsubsection}{\numberline {6.1.2}无人机与烟幕弹}{11}{}%
+\contentsline {subsection}{\numberline {6.2}遮蔽判定与临界方程}{12}{}%
+\contentsline {subsubsection}{\numberline {6.2.1}C1 边界：导弹进入/离开烟幕球}{12}{}%
+\contentsline {subsubsection}{\numberline {6.2.2}C2 边界}{12}{}%
+\contentsline {subsection}{\numberline {6.3}问题一数值结果}{13}{}%
+\contentsline {section}{\numberline {7}问题二求解}{14}{}%
+\contentsline {subsection}{\numberline {7.1}决策变量与约束条件}{14}{}%
+\contentsline {subsection}{\numberline {7.2}可行域稀疏性与锚点搜索}{14}{}%
+\contentsline {subsubsection}{\numberline {7.2.1}粗粒度网格遍历}{14}{}%
+\contentsline {subsubsection}{\numberline {7.2.2}坐标下降局部精化}{14}{}%
+\contentsline {subsection}{\numberline {7.3}高斯过程代理模型与EI采集}{15}{}%
+\contentsline {subsection}{\numberline {7.4}实验结果}{15}{}%
+\contentsline {section}{\numberline {8}问题三求解}{15}{}%
+\contentsline {subsection}{\numberline {8.1}决策变量与约束}{16}{}%
+\contentsline {subsection}{\numberline {8.2}锚点引导 + CMA-ES 联合优化}{16}{}%
+\contentsline {subsection}{\numberline {8.3}最优策略与结果}{16}{}%
+\contentsline {subsection}{\numberline {8.4}两弹分工与 Bomb3 失效的几何根源}{17}{}%
+\contentsline {section}{\numberline {9}问题四求解}{17}{}%
+\contentsline {subsection}{\numberline {9.1}决策变量与协同目标}{17}{}%
+\contentsline {subsection}{\numberline {9.2}三阶段分层求解策略}{17}{}%
+\contentsline {subsection}{\numberline {9.3}最优协同策略}{18}{}%
+\contentsline {subsection}{\numberline {9.4}时空分层的物理图景}{18}{}%
+\contentsline {subsection}{\numberline {9.5}协同增益分析}{19}{}%
